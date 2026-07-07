@@ -1,0 +1,13 @@
+name,Body/shirt ARAP clearance
+samples,21
+total_elapsed_ms,816.6395
+stop_iteration,20
+stop_reason,converged at iteration 20: feasible for 19 samples, dE(16)=0.000928076 <= 0.001
+first_iteration,0
+last_iteration,20
+initial_energy,0.188942987
+final_energy,0.00133152437
+initial_max_violation,0.104230382
+final_max_violation,0
+initial_num_violating,155
+final_num_violating,0

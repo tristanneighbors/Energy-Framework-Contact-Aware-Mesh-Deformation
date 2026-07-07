@@ -1,0 +1,13 @@
+name,ADSDF tentacle
+samples,122
+total_elapsed_ms,2563.6046
+stop_iteration,107
+stop_reason,converged at iteration 107: feasible for 107 samples, dE(16)=0.00947973 <= 0.0100123
+first_iteration,0
+last_iteration,121
+initial_energy,10.0123413
+final_energy,0.0199382381
+initial_max_violation,0.379297048
+final_max_violation,0
+initial_num_violating,1769
+final_num_violating,0

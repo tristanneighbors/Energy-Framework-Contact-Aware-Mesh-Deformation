@@ -1,0 +1,5 @@
+code/build/
+working/*
+!working/.gitkeep
+*.obj~
+*.ppm~

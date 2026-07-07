@@ -1,0 +1,13 @@
+name,ADSDF body/shirt posed landmark ARAP
+samples,276
+total_elapsed_ms,2294.4131
+stop_iteration,275
+stop_reason,converged at iteration 275: feasible for 120 samples, dE(16)=3.27958e-05 <= 9.50392e-05
+first_iteration,0
+last_iteration,275
+initial_energy,9.50391845
+final_energy,0.00884369747
+initial_max_violation,0.141041636
+final_max_violation,0
+initial_num_violating,96
+final_num_violating,0
