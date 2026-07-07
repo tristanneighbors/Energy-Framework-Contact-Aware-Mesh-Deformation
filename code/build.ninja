@@ -11,10 +11,6 @@ rule nvcc_exe
   command = $nvcc $nvccflags $in -o $out
   description = NVCC $out
 
-rule nvcc_tentacle_adsdf
-  command = $nvcc $nvccflags tentacle_armature_adsdf_experiment.cu spr/src/dbg.cu -o $out
-  description = NVCC $out
-
 rule run_experiment
   command = powershell -NoProfile -ExecutionPolicy Bypass -Command "New-Item -ItemType Directory -Force -Path '../working' | Out-Null; & './$in'; if ($$LASTEXITCODE -ne 0) { exit $$LASTEXITCODE }; New-Item -ItemType File -Force -Path '$out' | Out-Null"
   description = RUN $in
@@ -27,7 +23,7 @@ build build/bin/body_shirt_clearance_experiment.passed: run_experiment build/bin
 build build/bin/body_shirt_landmark_adsdf_experiment.exe: nvcc_exe body_shirt_landmark_adsdf_experiment.cu spr/src/dbg.cu | build/bin
 build build/bin/body_shirt_landmark_adsdf_experiment.passed: run_experiment build/bin/body_shirt_landmark_adsdf_experiment.exe
 
-build build/bin/tentacle_armature_adsdf_experiment.exe: nvcc_tentacle_adsdf tentacle_armature_adsdf_experiment.cu tentacle_armature_experiment.cu spr/src/dbg.cu | build/bin
+build build/bin/tentacle_armature_adsdf_experiment.exe: nvcc_exe tentacle_armature_adsdf_experiment.cu spr/src/dbg.cu | build/bin
 build build/bin/tentacle_armature_adsdf_experiment.passed: run_experiment build/bin/tentacle_armature_adsdf_experiment.exe
 
 build body_shirt_clearance_experiment: phony build/bin/body_shirt_clearance_experiment.exe
