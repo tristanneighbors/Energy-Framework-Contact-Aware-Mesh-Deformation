@@ -1,5 +1,8 @@
-#include "geometry.cuh"
+#include "mesh_to_adsdf.cuh"
+#include "dbg/cuda_utils.cuh"
 #include "experiment_diagnostics.cuh"
+
+#include <cuda_runtime.h>
 
 #include <algorithm>
 #include <cmath>
@@ -156,7 +159,7 @@ static vec3 areaWeightedCenter(const std::vector<vec3> &positions, const std::ve
 static EnergyReport evaluateEnergyAndGradient(
 	const ExperimentState &state,
 	const ExperimentParams &params,
-	const std::vector<geom::MeshSdfSample> &samples,
+	const std::vector<adsdf::AdsdfPointSample> &samples,
 	std::vector<vec3> *gradPOut,
 	std::vector<vec3> *gradQOut) {
 	const i32 n = i32(state.p.size());
@@ -173,7 +176,7 @@ static EnergyReport evaluateEnergyAndGradient(
 
 	for (i32 i = 0; i < n; ++i) {
 		const f32 area = state.vertexAreas[size_t(i)];
-		const geom::MeshSdfSample sample = samples[size_t(i)];
+		const adsdf::AdsdfPointSample sample = samples[size_t(i)];
 		const f32 offsetResidual = sample.phi - params.desiredOffset;
 		const f32 violation = sprMax<f32>(0.0f, params.desiredOffset - sample.phi);
 
@@ -284,31 +287,28 @@ static void applyStep(
 }
 
 static EnergyReport evaluateWithCurrentSamples(
-	geom::GpuMeshSdfSampler *sampler,
-	std::vector<geom::MeshSdfSample> *samples,
-	geom::MeshView target,
-	geom::BvhView bvh,
+	adsdf::GpuAdsdfSampler *sampler,
+	std::vector<adsdf::AdsdfPointSample> *samples,
+	adsdf::AdsdfView field,
 	const ExperimentState &state,
 	const ExperimentParams &params,
 	std::vector<vec3> *gradP,
 	std::vector<vec3> *gradQ) {
-	const std::vector<geom::MeshSdfSample> &currentSamples = geom::sampleMeshSdfPointsBlocking(
+	const std::vector<adsdf::AdsdfPointSample> &currentSamples = adsdf::sampleAdsdfPointsBlocking(
 		samples,
 		sampler,
-		target,
-		bvh,
+		field,
 		state.p,
-		geom::MeshSignMethod::RayParity);
+		0.003f);
 	return evaluateEnergyAndGradient(state, params, currentSamples, gradP, gradQ);
 }
 
 static void optimize(
 	ExperimentState *state,
 	const ExperimentParams &params,
-	geom::GpuMeshSdfSampler *sampler,
-	std::vector<geom::MeshSdfSample> *samples,
-	geom::MeshView target,
-	geom::BvhView bvh,
+	adsdf::GpuAdsdfSampler *sampler,
+	std::vector<adsdf::AdsdfPointSample> *samples,
+	adsdf::AdsdfView field,
 	expdiag::RunDiagnostics *run) {
 	std::vector<vec3> gradP;
 	std::vector<vec3> gradQ;
@@ -320,8 +320,7 @@ static void optimize(
 		const EnergyReport current = evaluateWithCurrentSamples(
 			sampler,
 			samples,
-			target,
-			bvh,
+			field,
 			*state,
 			params,
 			&gradP,
@@ -345,8 +344,7 @@ static void optimize(
 			const EnergyReport trialReport = evaluateWithCurrentSamples(
 				sampler,
 				samples,
-				target,
-				bvh,
+				field,
 				trial,
 				params,
 				nullptr,
@@ -378,7 +376,15 @@ static void optimize(
 
 int main() {
 	expdiag::RunDiagnostics run;
-	expdiag::beginRun(&run, "Body/shirt ARAP clearance");
+	expdiag::beginRun(&run, "ADSDF body/shirt ARAP clearance");
+
+	int deviceCount = 0;
+	const cudaError_t deviceCountResult = cudaGetDeviceCount(&deviceCount);
+	if (deviceCountResult != cudaSuccess || deviceCount <= 0) {
+		cudaGetLastError();
+		std::printf("Skipping ADSDF body/shirt clearance experiment: no CUDA device available.\n");
+		return 0;
+	}
 
 	geom::Mesh body;
 	geom::Mesh shirt;
@@ -414,23 +420,54 @@ int main() {
 	geom::uploadGpuMesh(&bodyMesh_d, &body);
 	geom::uploadGpuBvh(&bodyBvh_d, &bodyBvh);
 
-	geom::GpuMeshSdfSampler sampler = {};
-	geom::initGpuMeshSdfSampler(&sampler);
-	std::vector<geom::MeshSdfSample> samples;
+	const geom::Aabb bodyBounds = geom::computeMeshBounds(&body);
+	const vec3 bodyExtent = geom::aabbExtent(bodyBounds);
+	const f32 maxBodyExtent = sprMax<f32>(bodyExtent.x, sprMax<f32>(bodyExtent.y, bodyExtent.z));
+	const vec3 adsdfPadding(0.18f*maxBodyExtent);
+
+	adsdf::AdsdfDesc desc;
+	adsdf::initDesc(
+		&desc,
+		56,
+		40,
+		64,
+		2,
+		bodyBounds.lower - adsdfPadding,
+		bodyBounds.upper + adsdfPadding,
+		adsdf::AdsdfFilterKind::Linear);
+
+	adsdf::AdsdfLinearGrid linearGrid = {};
+	adsdf::allocLinearGrid(&linearGrid, &desc);
+
+	adsdf::MeshAdsdfBuildParams buildParams = adsdf::defaultMeshAdsdfBuildParams();
+	buildParams.lsq.fineRadius = 2;
+	buildParams.lsq.fineExtent = 0.45f;
+	buildParams.lsq.regularization = 1.0e-7f;
+	buildParams.nearSurfaceEps = 1.0e-4f;
+	buildParams.signMethod = geom::MeshSignMethod::RayParity;
+	adsdf::buildMeshLsqBlocking(&linearGrid, &bodyMesh_d, &bodyBvh_d, buildParams);
+
+	adsdf::AdsdfTextureGrid textureGrid = {};
+	adsdf::allocTextureGrid(&textureGrid, &desc);
+	adsdf::uploadTextureGrid(&textureGrid, &linearGrid);
+	const adsdf::AdsdfView field = adsdf::makeView(&textureGrid);
+
+	adsdf::GpuAdsdfSampler sampler = {};
+	adsdf::initGpuAdsdfSampler(&sampler);
+	std::vector<adsdf::AdsdfPointSample> samples;
 
 	auto cleanupCuda = [&]() {
-		geom::freeGpuMeshSdfSampler(&sampler);
+		adsdf::freeGpuAdsdfSampler(&sampler);
+		adsdf::freeTextureGrid(&textureGrid);
+		adsdf::freeLinearGrid(&linearGrid);
 		geom::freeGpuBvh(&bodyBvh_d);
 		geom::freeGpuMesh(&bodyMesh_d);
 	};
 
-	const geom::MeshView bodyView = geom::viewGpuMesh(&bodyMesh_d);
-	const geom::BvhView bvhView = geom::viewGpuBvh(&bodyBvh_d);
-
-	const EnergyReport before = evaluateWithCurrentSamples(&sampler, &samples, bodyView, bvhView, state, params, nullptr, nullptr);
+	const EnergyReport before = evaluateWithCurrentSamples(&sampler, &samples, field, state, params, nullptr, nullptr);
 	expdiag::appendSample(&run, makeDiagnosticSample(0, before));
 	std::printf(
-		"before body/shirt: energy=%g minPhi=%g maxViolation=%g avgViolation=%g violating=%d/%zu desiredOffset=%g\n",
+		"before ADSDF body/shirt: energy=%g minPhi=%g maxViolation=%g avgViolation=%g violating=%d/%zu desiredOffset=%g\n",
 		before.total,
 		before.minPhi,
 		before.maxViolation,
@@ -439,11 +476,11 @@ int main() {
 		state.p.size(),
 		params.desiredOffset);
 
-	optimize(&state, params, &sampler, &samples, bodyView, bvhView, &run);
+	optimize(&state, params, &sampler, &samples, field, &run);
 
-	const EnergyReport after = evaluateWithCurrentSamples(&sampler, &samples, bodyView, bvhView, state, params, nullptr, nullptr);
+	const EnergyReport after = evaluateWithCurrentSamples(&sampler, &samples, field, state, params, nullptr, nullptr);
 	std::printf(
-		"after body/shirt:  energy=%g minPhi=%g maxViolation=%g avgViolation=%g violating=%d/%zu\n",
+		"after ADSDF body/shirt:  energy=%g minPhi=%g maxViolation=%g avgViolation=%g violating=%d/%zu\n",
 		after.total,
 		after.minPhi,
 		after.maxViolation,
